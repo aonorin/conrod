@@ -1,4 +1,4 @@
-//! 
+//!
 //!
 //! A demonstration of all widgets available in Conrod.
 //!
@@ -10,12 +10,12 @@
 //!
 
 
-extern crate piston;
 #[macro_use] extern crate conrod;
 extern crate find_folder;
+extern crate glutin_window;
 extern crate graphics;
 extern crate opengl_graphics;
-extern crate glutin_window;
+extern crate piston;
 extern crate vecmath;
 
 use conrod::{
@@ -47,6 +47,7 @@ use opengl_graphics::glyph_cache::GlyphCache;
 use piston::event_loop::{Events, EventLoop};
 use piston::input::{RenderEvent};
 use piston::window::{WindowSettings, Size};
+
 
 type Ui = conrod::Ui<GlyphCache<'static>>;
 
@@ -129,6 +130,7 @@ impl DemoApp {
 
 }
 
+
 fn main() {
     let opengl = OpenGL::V3_2;
     let window: GlutinWindow =
@@ -176,9 +178,7 @@ fn main() {
                 // Draw the circle that's controlled by our XYPad.
                 graphics::Ellipse::new(demo.ddl_color.to_fsa())
                     .draw([demo.circle_pos[0], demo.circle_pos[1], 30.0, 30.0],
-                          graphics::default_draw_state(),
-                          graphics::math::abs_transform(ui.win_w, ui.win_h),
-                          gl);
+                          &c.draw_state, c.transform, gl);
             });
         }
     }
@@ -198,7 +198,7 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
     // the canvas.rs example for a demonstration of this). However, when only one `Split` is used
     // (as in this case) a single `Canvas` will simply fill the screen.
     // We can use this `Canvas` as a parent Widget upon which we can place other widgets.
-    Split::new(CANVAS).frame(demo.frame_width).color(demo.bg_color).set(ui);
+    Split::new(CANVAS).frame(demo.frame_width).color(demo.bg_color).scrolling(true).set(ui);
 
     // Calculate x and y coords for title (temporary until `Canvas`es are implemented, see #380).
     let title_x = demo.title_pad - (ui.win_w / 2.0) + 185.0;
@@ -313,8 +313,8 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
 
     }
 
-    // Number Dialer widget example. number_dialer(value, min, max, precision)
-    NumberDialer::new(demo.v_slider_height, 25.0, 250.0, 1u8)
+    // Number Dialer widget example. (value, min, max, precision)
+    NumberDialer::new(demo.v_slider_height, 25.0, 250.0, 1)
         .dimensions(260.0, 60.0)
         .right_from(shown_widget, 30.0)
         .color(demo.bg_color.invert())
@@ -324,8 +324,8 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
         .react(|new_height| demo.v_slider_height = new_height)
         .set(SLIDER_HEIGHT, ui);
 
-    // Number Dialer widget example. number_dialer(value, min, max, precision)
-    NumberDialer::new(demo.frame_width, 0.0, 15.0, 2u8)
+    // Number Dialer widget example. (value, min, max, precision)
+    NumberDialer::new(demo.frame_width, 0.0, 15.0, 2)
         .dimensions(260.0, 60.0)
         .down(20.0)
         .color(demo.bg_color.invert().plain_contrast())
@@ -336,14 +336,13 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
         .react(|new_width| demo.frame_width = new_width)
         .set(FRAME_WIDTH, ui);
 
-
     // A demonstration using widget_matrix to easily draw
     // a matrix of any kind of widget.
     let (cols, rows) = (8, 8);
     WidgetMatrix::new(cols, rows)
         .down(20.0)
         .dimensions(260.0, 260.0) // matrix width and height.
-        .each_widget(ui, |ui, num, col, row, pos, dim| { // This is called for every widget.
+        .each_widget(|_n, col: usize, row: usize| { // called for every matrix elem.
 
             // Color effect for fun.
             let (r, g, b, a) = (
@@ -353,17 +352,17 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
                 1.0
             );
 
-            // Now draw the widgets with the given.react.
-            let val = demo.bool_matrix[col][row];
-            Toggle::new(val)
-                .dim(dim)
-                .point(pos)
+            // Now return the widget we want to set in each element position.
+            // You can return any type that implements `Widget`.
+            // The returned widget will automatically be positioned and sized to the matrix
+            // element's rectangle.
+            let elem = &mut demo.bool_matrix[col][row];
+            Toggle::new(*elem)
                 .rgba(r, g, b, a)
                 .frame(demo.frame_width)
-                .react(|new_val: bool| demo.bool_matrix[col][row] = new_val)
-                .set(TOGGLE_MATRIX + num, ui);
-
-        });
+                .react(move |new_val: bool| *elem = new_val)
+        })
+        .set(TOGGLE_MATRIX, ui);
 
     // A demonstration using a DropDownList to select its own color.
     let mut ddl_color = demo.ddl_color;
@@ -394,7 +393,7 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
     XYPad::new(demo.circle_pos[0], 550.0, 700.0, // x range.
                demo.circle_pos[1], 320.0, 170.0) // y range.
         .dimensions(150.0, 150.0)
-        .right_from(TOGGLE_MATRIX + 63, 30.0)
+        .right_from(TOGGLE_MATRIX, 30.0)
         .align_bottom() // Align to the bottom of the last TOGGLE_MATRIX element.
         .color(ddl_color)
         .frame(demo.frame_width)
@@ -444,7 +443,6 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
 
     }
 
-
 }
 
 
@@ -453,7 +451,7 @@ fn set_widgets(ui: &mut Ui, demo: &mut DemoApp) {
 // To make this easier, conrod provides the `widget_ids` macro, which generates a unique `WidgetId`
 // for each identifier given in the list.
 // The `with n` syntax reserves `n` number of WidgetIds for that identifier, rather than just one.
-// This is often useful when you need to use an identifier in some kind of loop (i.e. like within 
+// This is often useful when you need to use an identifier in some kind of loop (i.e. like within
 // the use of `WidgetMatrix` as above).
 widget_ids! {
     CANVAS,
@@ -464,9 +462,8 @@ widget_ids! {
     COLOR_SLIDER with 3,
     SLIDER_HEIGHT,
     FRAME_WIDTH,
-    TOGGLE_MATRIX with 64,
+    TOGGLE_MATRIX,
     COLOR_SELECT,
     CIRCLE_POSITION,
     ENVELOPE_EDITOR with 4
 }
-

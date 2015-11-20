@@ -9,11 +9,11 @@
 
 #[macro_use] extern crate bitflags;
 extern crate clock_ticks;
+extern crate daggy;
 extern crate elmesque;
 extern crate graphics;
 extern crate json_io;
 extern crate num;
-extern crate petgraph;
 extern crate input;
 extern crate rand;
 extern crate rustc_serialize;
@@ -64,11 +64,16 @@ pub use position::{align_left_of, align_right_of, align_bottom_of, align_top_of}
 pub use position::{middle_of, top_left_of, top_right_of, bottom_left_of, bottom_right_of,
                    mid_top_of, mid_bottom_of, mid_left_of, mid_right_of};
 pub use position::{Corner, Depth, Direction, Dimensions, Horizontal, HorizontalAlign, Margin,
-                   Padding, Place, Point, Position, Positionable, Sizeable, Vertical,
-                   VerticalAlign};
+                   Padding, Place, Point, Position, Positionable, Range, Rect, Sizeable,
+                   Vertical, VerticalAlign};
+pub use position::Matrix as PositionMatrix;
 pub use theme::{Align, Theme};
 pub use ui::{GlyphCache, Ui, UserInput};
-pub use widget::{drag, scroll, CommonBuilder, DrawArgs, UiCell, UpdateArgs, Widget};
+pub use widget::{drag, scroll};
+pub use widget::{CommonBuilder, CommonState, DrawArgs, Floating, MaybeParent, UiCell, UpdateArgs,
+                 Widget};
+pub use widget::{KidArea, KidAreaArgs};
+pub use widget::CommonState as WidgetCommonState;
 pub use widget::Id as WidgetId;
 pub use widget::Index as WidgetIndex;
 pub use widget::State as WidgetState;

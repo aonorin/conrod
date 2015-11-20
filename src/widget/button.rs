@@ -108,10 +108,7 @@ impl<'a, F> Button<'a, F> {
 }
 
 
-impl<'a, F> Widget for Button<'a, F>
-    where
-        F: FnMut()
-{
+impl<'a, F> Widget for Button<'a, F> where F: FnMut() {
     type State = State;
     type Style = Style;
 
@@ -123,83 +120,68 @@ impl<'a, F> Widget for Button<'a, F>
     }
     fn style(&self) -> Style { self.style.clone() }
 
-    fn capture_mouse(prev: &State, new: &State) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Highlighted, Interaction::Clicked) => true,
-            _ => false,
-        }
-    }
-
-    fn uncapture_mouse(prev: &State, new: &State) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Clicked, Interaction::Highlighted) => true,
-            (Interaction::Clicked, Interaction::Normal) => true,
-            _ => false,
-        }
-    }
-
     fn default_width<C: CharacterCache>(&self, theme: &Theme, _: &GlyphCache<C>) -> Scalar {
         const DEFAULT_WIDTH: Scalar = 64.0;
-        self.common.maybe_width.or(theme.maybe_button.as_ref().map(|default| {
+        theme.maybe_button.as_ref().map(|default| {
             default.common.maybe_width.unwrap_or(DEFAULT_WIDTH)
-        })).unwrap_or(DEFAULT_WIDTH)
+        }).unwrap_or(DEFAULT_WIDTH)
     }
 
     fn default_height(&self, theme: &Theme) -> Scalar {
         const DEFAULT_HEIGHT: Scalar = 64.0;
-        self.common.maybe_height.or(theme.maybe_button.as_ref().map(|default| {
+        theme.maybe_button.as_ref().map(|default| {
             default.common.maybe_height.unwrap_or(DEFAULT_HEIGHT)
-        })).unwrap_or(DEFAULT_HEIGHT)
+        }).unwrap_or(DEFAULT_HEIGHT)
     }
 
     /// Update the state of the Button.
-    fn update<'b, C>(mut self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State>
-        where C: CharacterCache,
-    {
-        use utils::is_over_rect;
-        let widget::UpdateArgs { prev_state, xy, dim, ui, .. } = args;
-        let widget::State { ref state, .. } = *prev_state;
-        let maybe_mouse = ui.input().maybe_mouse.map(|mouse| mouse.relative_to(xy));
+    fn update<C: CharacterCache>(mut self, args: widget::UpdateArgs<Self, C>) {
+        let widget::UpdateArgs { state, rect, mut ui, .. } = args;
+        let maybe_mouse = ui.input().maybe_mouse;
 
         // Check whether or not a new interaction has occurred.
         let new_interaction = match (self.enabled, maybe_mouse) {
             (false, _) | (true, None) => Interaction::Normal,
             (true, Some(mouse)) => {
-                let is_over = is_over_rect([0.0, 0.0], mouse.xy, dim);
-                get_new_interaction(is_over, state.interaction, mouse)
+                let is_over = rect.is_over(mouse.xy);
+                get_new_interaction(is_over, state.view().interaction, mouse)
             },
         };
 
+        // Capture the mouse if it was clicked, uncpature if it was released.
+        match (state.view().interaction, new_interaction) {
+            (Interaction::Highlighted, Interaction::Clicked) => { ui.capture_mouse(); },
+            (Interaction::Clicked, Interaction::Highlighted) |
+            (Interaction::Clicked, Interaction::Normal)      => { ui.uncapture_mouse(); },
+            _ => (),
+        }
+
         // If the mouse was released over button, react.
         if let (Interaction::Clicked, Interaction::Highlighted) =
-            (state.interaction, new_interaction) {
+            (state.view().interaction, new_interaction) {
             if let Some(ref mut react) = self.maybe_react { react() }
         }
 
-        // A function for constructing a new state.
-        let new_state = || {
-            State {
-                maybe_label: self.maybe_label.as_ref().map(|label| label.to_string()),
-                interaction: new_interaction,
-            }
-        };
+        // If there has been a change in interaction, set the new one.
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || state.maybe_label.as_ref().map(|string| &string[..]) != self.maybe_label;
-
-        // Construct the new state if there was a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        // If the label has changed, update it.
+        if state.view().maybe_label.as_ref().map(|label| &label[..]) != self.maybe_label {
+            state.update(|state| {
+                state.maybe_label = self.maybe_label.as_ref().map(|label| label.to_string())
+            });
+        }
     }
 
     /// Construct an Element from the given Button State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
-        where C: CharacterCache,
-    {
-        use elmesque::form::{collage, rect, text};
+    fn draw<C: CharacterCache>(args: widget::DrawArgs<Self, C>) -> Element {
+        use elmesque::form::{self, collage, text};
 
-        let widget::DrawArgs { state, style, theme, .. } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { state, style, theme, rect, .. } = args;
+        let xy = rect.xy();
+        let dim = rect.dim();
 
         // Retrieve the styling for the Element..
         let color = state.color(style.color(theme));
@@ -207,9 +189,9 @@ impl<'a, F> Widget for Button<'a, F>
         let frame_color = style.frame_color(theme);
 
         // Construct the frame and inner rectangle forms.
-        let frame_form = rect(dim[0], dim[1]).filled(frame_color);
+        let frame_form = form::rect(dim[0], dim[1]).filled(frame_color);
         let (inner_w, inner_h) = (dim[0] - frame * 2.0, dim[1] - frame * 2.0);
-        let pressable_form = rect(inner_w, inner_h).filled(color);
+        let pressable_form = form::rect(inner_w, inner_h).filled(color);
 
         // Construct the label's Form.
         let maybe_label_form = state.maybe_label.as_ref().map(|label_text| {

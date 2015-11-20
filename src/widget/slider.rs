@@ -125,10 +125,9 @@ impl<'a, T, F> Slider<'a, T, F> {
 
 }
 
-impl<'a, T, F> Widget for Slider<'a, T, F>
-    where
-        F: FnMut(T),
-        T: ::std::any::Any + ::std::fmt::Debug + Float + NumCast + ToPrimitive,
+impl<'a, T, F> Widget for Slider<'a, T, F> where
+    F: FnMut(T),
+    T: ::std::any::Any + ::std::fmt::Debug + Float + NumCast + ToPrimitive,
 {
     type State = State<T>;
     type Style = Style;
@@ -147,51 +146,41 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
     }
     fn style(&self) -> Style { self.style.clone() }
 
-    fn capture_mouse(prev: &State<T>, new: &State<T>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Highlighted, Interaction::Clicked) => true,
-            _ => false,
-        }
-    }
-
-    fn uncapture_mouse(prev: &State<T>, new: &State<T>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Clicked, Interaction::Highlighted) => true,
-            (Interaction::Clicked, Interaction::Normal) => true,
-            _ => false,
-        }
-    }
-
     fn default_width<C: CharacterCache>(&self, theme: &Theme, _: &GlyphCache<C>) -> Scalar {
         const DEFAULT_WIDTH: Scalar = 192.0;
-        self.common.maybe_width.or(theme.maybe_slider.as_ref().map(|default| {
+        theme.maybe_slider.as_ref().map(|default| {
             default.common.maybe_width.unwrap_or(DEFAULT_WIDTH)
-        })).unwrap_or(DEFAULT_WIDTH)
+        }).unwrap_or(DEFAULT_WIDTH)
     }
 
     fn default_height(&self, theme: &Theme) -> Scalar {
         const DEFAULT_HEIGHT: Scalar = 48.0;
-        self.common.maybe_height.or(theme.maybe_slider.as_ref().map(|default| {
+        theme.maybe_slider.as_ref().map(|default| {
             default.common.maybe_height.unwrap_or(DEFAULT_HEIGHT)
-        })).unwrap_or(DEFAULT_HEIGHT)
+        }).unwrap_or(DEFAULT_HEIGHT)
     }
 
     /// Update the state of the Slider.
-    fn update<'b, C>(mut self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State<T>>
-        where C: CharacterCache,
-    {
-        use utils::{is_over_rect, map_range};
+    fn update<C: CharacterCache>(mut self, args: widget::UpdateArgs<Self, C>) {
+        use utils::map_range;
 
-        let widget::UpdateArgs { prev_state, xy, dim, style, ui, .. } = args;
-        let widget::State { ref state, .. } = *prev_state;
+        let widget::UpdateArgs { state, rect, style, mut ui, .. } = args;
+        let (xy, dim) = rect.xy_dim();
         let maybe_mouse = ui.input().maybe_mouse.map(|mouse| mouse.relative_to(xy));
         let new_interaction = match (self.enabled, maybe_mouse) {
             (false, _) | (true, None) => Interaction::Normal,
             (true, Some(mouse)) => {
-                let is_over = is_over_rect([0.0, 0.0], mouse.xy, dim);
-                get_new_interaction(is_over, state.interaction, mouse)
+                let is_over = ::position::is_over_rect([0.0, 0.0], dim, mouse.xy);
+                get_new_interaction(is_over, state.view().interaction, mouse)
             },
         };
+
+        match (state.view().interaction, new_interaction) {
+            (Interaction::Highlighted, Interaction::Clicked) => { ui.capture_mouse(); },
+            (Interaction::Clicked, Interaction::Highlighted) |
+            (Interaction::Clicked, Interaction::Normal)      => { ui.uncapture_mouse(); },
+            _ => (),
+        }
 
         let new_value = if let Some(mouse) = maybe_mouse {
             let Slider { value, min, max, skew, .. } = self;
@@ -203,7 +192,7 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
 
             if is_horizontal {
                 // Horizontal.
-                let w_perc = match (state.interaction, new_interaction) {
+                let w_perc = match (state.view().interaction, new_interaction) {
                     (Interaction::Highlighted, Interaction::Clicked) |
                     (Interaction::Clicked, Interaction::Clicked) => {
                         let w = map_range(mouse.xy[0], -half_inner_w, half_inner_w, 0.0, inner_w);
@@ -219,7 +208,7 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
                 value_from_perc(w_perc as f32, min, max)
             } else {
                 // Vertical.
-                let h_perc = match (state.interaction, new_interaction) {
+                let h_perc = match (state.view().interaction, new_interaction) {
                     (Interaction::Highlighted, Interaction::Clicked) |
                     (Interaction::Clicked, Interaction::Clicked) => {
                         let h = map_range(mouse.xy[1], -half_inner_h, half_inner_h, 0.0, inner_h);
@@ -241,7 +230,7 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
         // React.
         match self.maybe_react {
             Some(ref mut react) => {
-                if self.value != new_value || match (state.interaction, new_interaction) {
+                if self.value != new_value || match (state.view().interaction, new_interaction) {
                     (Interaction::Highlighted, Interaction::Clicked) |
                     (Interaction::Clicked, Interaction::Highlighted) => true,
                     _ => false,
@@ -249,37 +238,41 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
             }, None => (),
         }
 
-        // A function for constructing a new state.
-        let new_state = || {
-            State {
-                interaction: new_interaction,
-                value: self.value,
-                min: self.min,
-                max: self.max,
-                skew: self.skew,
-                maybe_label: self.maybe_label.as_ref().map(|label| label.to_string()),
-            }
-        };
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || state.value != self.value
-            || state.min != self.min || state.max != self.max
-            || state.skew != self.skew
-            || state.maybe_label.as_ref().map(|string| &string[..]) != self.maybe_label;
+        if state.view().value != new_value {
+            state.update(|state| state.value = self.value);
+        }
 
-        // Construct the new state if there was a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        if state.view().min != self.min {
+            state.update(|state| state.min = self.min);
+        }
+
+        if state.view().max != self.max {
+            state.update(|state| state.max = self.max);
+        }
+
+        if state.view().skew != self.skew {
+            state.update(|state| state.skew = self.skew);
+        }
+
+        if state.view().maybe_label.as_ref().map(|label| &label[..]) != self.maybe_label {
+            state.update(|state| {
+                state.maybe_label = self.maybe_label.as_ref().map(|label| label.to_string());
+            })
+        }
     }
 
     /// Construct an Element from the given Slider State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
+    fn draw<C>(args: widget::DrawArgs<Self, C>) -> Element
         where C: CharacterCache,
     {
-        use elmesque::form::{collage, rect, text};
+        use elmesque::form::{self, collage, text};
 
-        let widget::DrawArgs { state, style, theme, glyph_cache } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { rect, state, style, theme, glyph_cache, .. } = args;
+        let (xy, dim) = rect.xy_dim();
         let frame = style.frame(theme);
         let (inner_w, inner_h) = (dim[0] - frame * 2.0, dim[1] - frame * 2.0);
         let frame_color = state.color(style.frame_color(theme));
@@ -302,10 +295,10 @@ impl<'a, T, F> Widget for Slider<'a, T, F>
         };
 
         // Rectangle frame / backdrop Form.
-        let frame_form = rect(dim[0], dim[1])
+        let frame_form = form::rect(dim[0], dim[1])
             .filled(frame_color);
         // Slider rectangle Form.
-        let pad_form = rect(pad_dim[0], pad_dim[1])
+        let pad_form = form::rect(pad_dim[0], pad_dim[1])
             .filled(color)
             .shift(pad_rel_xy[0], pad_rel_xy[1]);
 

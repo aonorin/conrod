@@ -1,5 +1,5 @@
 
-use Scalar;
+use ::{GlyphCache, Scalar};
 use color::Color;
 use elmesque::Element;
 use graphics::character::CharacterCache;
@@ -229,34 +229,36 @@ impl<'a> Widget for Tabs<'a> {
     }
     fn style(&self) -> Style { self.style.clone() }
 
-    /// The area on which child widgets will be placed when using the `Place` `Position` methods.
-    fn kid_area(state: &widget::State<State>, style: &Style, theme: &Theme) -> widget::KidArea {
+    /// The area on which child widgets will be placed when using the `Place` Positionable methods.
+    fn kid_area<C: CharacterCache>(&self, args: widget::KidAreaArgs<Self, C>) -> widget::KidArea {
+        let widget::KidAreaArgs { rect, style, theme, glyph_cache } = args;
+        let font_size = style.font_size(theme);
         match style.layout(theme) {
-            Layout::Horizontal => widget::KidArea {
-                xy: [state.xy[0], state.xy[1] - state.state.tab_bar_dim[1] / 2.0],
-                dim: [state.dim[0], state.dim[1] - state.state.tab_bar_dim[1]],
-                pad: style.canvas.padding(theme),
+            Layout::Horizontal => {
+                let tab_bar_h = horizontal_tab_bar_h(style.maybe_bar_width, font_size as Scalar);
+                widget::KidArea {
+                    rect: rect.pad_top(tab_bar_h),
+                    pad: style.canvas.padding(theme),
+                }
             },
-            Layout::Vertical => widget::KidArea {
-                xy: [state.xy[0] + state.state.tab_bar_dim[0] / 2.0, state.xy[1]],
-                dim: [state.dim[0] - state.state.tab_bar_dim[0], state.dim[1]],
-                pad: style.canvas.padding(theme),
+            Layout::Vertical => {
+                let max_text_width = max_text_width(self.tabs.iter(), font_size, glyph_cache);
+                let tab_bar_w = vertical_tab_bar_w(style.maybe_bar_width, max_text_width as Scalar);
+                widget::KidArea {
+                    rect: rect.pad_left(tab_bar_w),
+                    pad: style.canvas.padding(theme),
+                }
             },
         }
     }
 
     /// Update the state of the Tabs.
-    fn update<'b, C>(self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State>
-        where C: CharacterCache,
-    {
-        let widget::UpdateArgs { idx, prev_state, xy, dim, style, mut ui } = args;
-        let widget::State { ref state, .. } = *prev_state;
+    fn update<C: CharacterCache>(self, args: widget::UpdateArgs<Self, C>) {
+        let widget::UpdateArgs { idx, state, rect, style, mut ui, .. } = args;
+        let (xy, dim) = rect.xy_dim();
         let layout = style.layout(ui.theme());
         let font_size = style.font_size(ui.theme());
-        let max_text_width = self.tabs.iter().fold(0.0, |max_w, &(_, string)| {
-            let w = ui.glyph_cache().width(font_size, &string);
-            if w > max_w { w } else { max_w }
-        });
+        let max_text_width = max_text_width(self.tabs.iter(), font_size, ui.glyph_cache());
 
         // Calculate the area of the tab bar.
         let (tab_bar_dim, tab_bar_rel_xy) =
@@ -276,16 +278,16 @@ impl<'a> Widget for Tabs<'a> {
 
         // Determine whether the mouse is currently over part of the widget..
         let is_over_elem = || if let Some(mouse) = maybe_mouse {
-            use utils::is_over_rect;
-            if is_over_rect([0.0, 0.0], mouse.xy, dim) {
-                if is_over_rect(tab_bar_rel_xy, mouse.xy, tab_bar_dim) {
+            use position::is_over_rect;
+            if is_over_rect([0.0, 0.0], dim, mouse.xy) {
+                if is_over_rect(tab_bar_rel_xy, tab_bar_dim, mouse.xy) {
                     match layout {
                         Layout::Horizontal => {
                             let start_tab_x = -dim[0] / 2.0 + tab_dim[0] / 2.0;
                             for i in 0..self.tabs.len() {
                                 let tab_x = start_tab_x + i as f64 * tab_dim[0];
                                 let tab_xy = [tab_x, tab_bar_rel_xy[1]];
-                                if is_over_rect(tab_xy, mouse.xy, tab_dim) {
+                                if is_over_rect(tab_xy, tab_dim, mouse.xy) {
                                     return Some(Elem::Tab(i));
                                 }
                             }
@@ -296,7 +298,7 @@ impl<'a> Widget for Tabs<'a> {
                             for i in 0..self.tabs.len() {
                                 let tab_y = start_tab_y - i as f64 * tab_dim[1];
                                 let tab_xy = [tab_bar_rel_xy[0], tab_y];
-                                if is_over_rect(tab_xy, mouse.xy, tab_dim) {
+                                if is_over_rect(tab_xy, tab_dim, mouse.xy) {
                                     return Some(Elem::Tab(i));
                                 }
                             }
@@ -317,7 +319,7 @@ impl<'a> Widget for Tabs<'a> {
         let new_interaction = if let Some(mouse) = maybe_mouse {
             use mouse::ButtonPosition::{Down, Up};
             use self::Interaction::{Normal, Highlighted, Clicked};
-            match (is_over_elem(), state.interaction, mouse.left.position) {
+            match (is_over_elem(), state.view().interaction, mouse.left.position) {
                 (Some(_),    Normal,          Down) => Normal,
                 (Some(elem), _,               Up)   => Highlighted(elem),
                 (Some(elem), Highlighted(_),  Down) => Clicked(elem),
@@ -329,11 +331,11 @@ impl<'a> Widget for Tabs<'a> {
         };
 
         // Determine the currently selected tab by comparing our current and previous interactions.
-        let maybe_selected_tab_idx = match (state.interaction, new_interaction) {
+        let maybe_selected_tab_idx = match (state.view().interaction, new_interaction) {
             (Interaction::Clicked(Elem::Tab(prev_idx)), Interaction::Highlighted(Elem::Tab(idx)))
                 if prev_idx == idx => Some(idx),
             _ =>
-                if let Some(idx) = state.maybe_selected_tab_idx { Some(idx) }
+                if let Some(idx) = state.view().maybe_selected_tab_idx { Some(idx) }
                 else if let Some(idx) = self.maybe_starting_tab_idx { Some(idx) }
                 else if self.tabs.len() > 0 { Some(0) }
                 else { None },
@@ -359,40 +361,42 @@ impl<'a> Widget for Tabs<'a> {
                 .set(child_id, &mut ui);
         }
 
-        // A function for constructing new state.
-        let new_state = || State {
-            tabs: self.tabs.iter().map(|&(id, s)| (id, s.to_owned())).collect(),
-            interaction: new_interaction,
-            maybe_selected_tab_idx: maybe_selected_tab_idx,
-            tab_bar_dim: tab_bar_dim,
-            tab_bar_rel_xy: tab_bar_rel_xy,
-        };
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || state.tab_bar_dim != tab_bar_dim
-            || state.tab_bar_rel_xy != tab_bar_rel_xy
-            || state.maybe_selected_tab_idx != maybe_selected_tab_idx
-            || state.tabs.len() != self.tabs.len()
-            || state.tabs.iter().zip(self.tabs.iter())
+        if state.view().tab_bar_dim != tab_bar_dim {
+            state.update(|state| state.tab_bar_dim = tab_bar_dim);
+        }
+
+        if state.view().tab_bar_rel_xy != tab_bar_rel_xy {
+            state.update(|state| state.tab_bar_rel_xy = tab_bar_rel_xy);
+        }
+
+        if state.view().maybe_selected_tab_idx != maybe_selected_tab_idx {
+            state.update(|state| state.maybe_selected_tab_idx = maybe_selected_tab_idx);
+        }
+
+        let tabs_have_changed = state.view().tabs.len() != self.tabs.len()
+            || state.view().tabs.iter().zip(self.tabs.iter())
                 .any(|(&(prev_id, ref prev_label), &(id, label))| {
                     prev_id != id || &prev_label[..] != label
                 });
 
-        // Construct the new state if there has been a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        if tabs_have_changed {
+            state.update(|state| {
+                state.tabs = self.tabs.iter().map(|&(id, s)| (id, s.to_owned())).collect();
+            });
+        }
     }
 
 
     /// Construct an Element from the given Button State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
-        where C: CharacterCache,
-    {
-        use elmesque::form::{collage, rect, text};
+    fn draw<C: CharacterCache>(args: widget::DrawArgs<Self, C>) -> Element {
+        use elmesque::form::{self, collage, text};
         use elmesque::text::Text;
 
-        let widget::DrawArgs { state, style, theme, .. } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { rect, state, style, theme, .. } = args;
         let State {
             ref tabs,
             ref interaction,
@@ -402,12 +406,13 @@ impl<'a> Widget for Tabs<'a> {
             ..
         } = *state;
 
+        let (xy, dim) = rect.xy_dim();
         let frame = style.canvas.frame(theme);
         let inner_dim = ::vecmath::vec2_sub(dim, [frame * 2.0; 2]);
         let color = style.canvas.color(theme);
         let frame_color = style.canvas.frame_color(theme);
-        let frame_form = rect(dim[0], dim[1]).filled(frame_color);
-        let rect_form = rect(inner_dim[0], inner_dim[1]).filled(color);
+        let frame_form = form::rect(dim[0], dim[1]).filled(frame_color);
+        let rect_form = form::rect(inner_dim[0], inner_dim[1]).filled(color);
         let font_size = style.font_size(theme);
         let label_color = style.label_color(theme);
         let layout = style.layout(theme);
@@ -428,7 +433,7 @@ impl<'a> Widget for Tabs<'a> {
             let width_multi = 1.0 / num_tabs as f64;
 
             // Function for producing the rectangular tab forms.
-            let rect_form = |dim: Dimensions, color: Color| rect(dim[0], dim[1]).filled(color);
+            let rect_form = |dim: Dimensions, color: Color| form::rect(dim[0], dim[1]).filled(color);
 
             // Produces the label form for a tab.
             let label_form = |label: &str| text(Text::from_string(label.to_owned())
@@ -488,6 +493,18 @@ impl<'a> Widget for Tabs<'a> {
 }
 
 
+/// Calculate the max text width yielded by a string in the tabs slice.
+fn max_text_width<'a, I, C>(tabs: I, font_size: FontSize, glyph_cache: &GlyphCache<C>) -> Scalar
+    where I: Iterator<Item=&'a (widget::Id, &'a str)>,
+          C: CharacterCache,
+{
+    tabs.fold(0.0, |max_w, &(_, string)| {
+        let w = glyph_cache.width(font_size, &string);
+        if w > max_w { w } else { max_w }
+    })
+}
+
+
 /// Calculate the dimensions and position of the Tab Bar relative to the center of the widget.
 fn tab_bar_area(dim: Dimensions,
                 layout: Layout,
@@ -497,16 +514,14 @@ fn tab_bar_area(dim: Dimensions,
 {
     match layout {
         Layout::Horizontal => {
-            let h = maybe_bar_width
-                .unwrap_or_else(|| font_size + TAB_BAR_LABEL_PADDING * 2.0);
+            let h = horizontal_tab_bar_h(maybe_bar_width, font_size);
             let tab_bar_dim = [dim[0], h];
             let y = dim[1] / 2.0 - h / 2.0;
             let tab_bar_rel_xy = [0.0, y];
             (tab_bar_dim, tab_bar_rel_xy)
         },
         Layout::Vertical => {
-            let w = maybe_bar_width
-                .unwrap_or_else(|| max_text_width + TAB_BAR_LABEL_PADDING * 2.0);
+            let w = vertical_tab_bar_w(maybe_bar_width, max_text_width);
             let tab_bar_dim = [w, dim[1]];
             let x = -dim[0] / 2.0 + w / 2.0;
             let tab_bar_rel_xy = [x, 0.0];
@@ -515,6 +530,15 @@ fn tab_bar_area(dim: Dimensions,
     }
 }
 
+/// The height of a horizontally laid out tab bar area.
+fn horizontal_tab_bar_h(maybe_bar_width: Option<Scalar>, font_size: Scalar) -> Scalar {
+    maybe_bar_width.unwrap_or_else(|| font_size + TAB_BAR_LABEL_PADDING * 2.0)
+}
+
+/// The width of a vertically laid out tab bar area.
+fn vertical_tab_bar_w(maybe_bar_width: Option<Scalar>, max_text_width: Scalar) -> Scalar {
+    maybe_bar_width.unwrap_or_else(|| max_text_width + TAB_BAR_LABEL_PADDING * 2.0)
+}
 
 impl Style {
 

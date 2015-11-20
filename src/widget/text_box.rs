@@ -185,9 +185,9 @@ fn over_elem<C: CharacterCache>(glyph_cache: &GlyphCache<C>,
                                 text_w: f64,
                                 font_size: FontSize,
                                 text: &str) -> Elem {
-    use utils::is_over_rect;
-    if is_over_rect([0.0, 0.0], mouse_xy, dim) {
-        if is_over_rect([0.0, 0.0], mouse_xy, pad_dim) {
+    use position::is_over_rect;
+    if is_over_rect([0.0, 0.0], dim, mouse_xy) {
+        if is_over_rect([0.0, 0.0], pad_dim, mouse_xy) {
             let (idx, _) = closest_idx(glyph_cache, mouse_xy, text_start_x, text_w, font_size, text);
             Elem::Char(idx)
         } else {
@@ -318,10 +318,7 @@ impl<'a, F> TextBox<'a, F> {
 
 }
 
-impl<'a, F> Widget for TextBox<'a, F>
-    where
-        F: FnMut(&mut String)
-{
+impl<'a, F> Widget for TextBox<'a, F> where F: FnMut(&mut String) {
     type State = State;
     type Style = Style;
     fn common(&self) -> &widget::CommonBuilder { &self.common }
@@ -338,41 +335,23 @@ impl<'a, F> Widget for TextBox<'a, F>
 
     fn default_width<C: CharacterCache>(&self, theme: &Theme, _: &GlyphCache<C>) -> Scalar {
         const DEFAULT_WIDTH: Scalar = 192.0;
-        self.common.maybe_width.or(theme.maybe_text_box.as_ref().map(|default| {
+        theme.maybe_text_box.as_ref().map(|default| {
             default.common.maybe_width.unwrap_or(DEFAULT_WIDTH)
-        })).unwrap_or(DEFAULT_WIDTH)
+        }).unwrap_or(DEFAULT_WIDTH)
     }
 
     fn default_height(&self, theme: &Theme) -> Scalar {
         const DEFAULT_HEIGHT: Scalar = 48.0;
-        self.common.maybe_height.or(theme.maybe_text_box.as_ref().map(|default| {
+        theme.maybe_text_box.as_ref().map(|default| {
             default.common.maybe_height.unwrap_or(DEFAULT_HEIGHT)
-        })).unwrap_or(DEFAULT_HEIGHT)
-    }
-
-    /// Capture the keyboard if the Interaction has become `Captured`.
-    fn capture_keyboard(prev: &State, new: &State) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Uncaptured(_), Interaction::Captured(_)) => true,
-            _ => false,
-        }
-    }
-
-    /// Uncapture the keyboard if the Interaction has become `Uncaptured`.
-    fn uncapture_keyboard(prev: &State, new: &State) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Captured(_), Interaction::Uncaptured(_)) => true,
-            _ => false,
-        }
+        }).unwrap_or(DEFAULT_HEIGHT)
     }
 
     /// Update the state of the TextBox.
-    fn update<'b, C>(mut self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State>
-        where C: CharacterCache,
-    {
+    fn update<C: CharacterCache>(mut self, args: widget::UpdateArgs<Self, C>) {
+        let widget::UpdateArgs { state, rect, style, mut ui, .. } = args;
 
-        let widget::UpdateArgs { prev_state, xy, dim, style, ui, .. } = args;
-        let widget::State { ref state, .. } = *prev_state;
+        let (xy, dim) = rect.xy_dim();
         let maybe_mouse = ui.input().maybe_mouse.map(|mouse| mouse.relative_to(xy));
         let frame = style.frame(ui.theme());
         let font_size = style.font_size(ui.theme());
@@ -380,13 +359,13 @@ impl<'a, F> Widget for TextBox<'a, F>
         let text_w = ui.glyph_cache().width(font_size, &self.text);
         let text_x = position::align_left_of(pad_dim[0], text_w) + TEXT_PADDING;
         let text_start_x = text_x - text_w / 2.0;
-        let mut new_control_pressed = state.control_pressed;
+        let mut new_control_pressed = state.view().control_pressed;
         let mut new_interaction = match (self.enabled, maybe_mouse) {
             (false, _) | (true, None) => Interaction::Uncaptured(Uncaptured::Normal),
             (true, Some(mouse)) => {
                 let over_elem = over_elem(ui.glyph_cache(), mouse.xy, dim, pad_dim, text_start_x,
                                           text_w, font_size, &self.text);
-                get_new_interaction(over_elem, state.interaction, mouse)
+                get_new_interaction(over_elem, state.view().interaction, mouse)
             },
         };
 
@@ -510,41 +489,41 @@ impl<'a, F> Widget for TextBox<'a, F>
             new_interaction = Interaction::Captured(View { cursor: cursor, .. captured });
         }
 
-        // Function for constructing a new state.
-        let new_state = || {
-            State {
-                interaction: new_interaction,
-                text: self.text.clone(),
-                control_pressed: new_control_pressed,
-            }
-        };
+        // Check the interactions to determine whether we need to capture or uncapture the keyboard.
+        match (state.view().interaction, new_interaction) {
+            (Interaction::Uncaptured(_), Interaction::Captured(_)) => { ui.capture_keyboard(); },
+            (Interaction::Captured(_), Interaction::Uncaptured(_)) => { ui.uncapture_keyboard(); },
+            _ => (),
+        }
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || &state.text[..] != &self.text[..]
-            || state.control_pressed != new_control_pressed;
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
 
-        // Construct the new state if there was a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        if &state.view().text[..] != &self.text[..] {
+            state.update(|state| state.text = self.text.clone());
+        }
+
+        if state.view().control_pressed != new_control_pressed {
+            state.update(|state| state.control_pressed = new_control_pressed);
+        }
     }
 
     /// Construct an Element from the given TextBox State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
-        where C: CharacterCache,
-    {
-        use elmesque::form::{collage, line, rect, solid, text};
+    fn draw<C: CharacterCache>(args: widget::DrawArgs<Self, C>) -> Element {
+        use elmesque::form::{self, collage, line, solid, text};
         use elmesque::text::Text;
 
-        let widget::DrawArgs { state, style, theme, glyph_cache } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { rect, state, style, theme, glyph_cache, .. } = args;
 
         // Construct the frame and inner rectangle Forms.
+        let (xy, dim) = rect.xy_dim();
         let frame = style.frame(theme);
         let pad_dim = vec2_sub(dim, [frame * 2.0; 2]);
         let color = state.interaction.color(style.color(theme));
         let frame_color = style.frame_color(theme);
-        let frame_form = rect(dim[0], dim[1]).filled(frame_color);
-        let inner_form = rect(pad_dim[0], pad_dim[1]).filled(color);
+        let frame_form = form::rect(dim[0], dim[1]).filled(frame_color);
+        let inner_form = form::rect(pad_dim[0], pad_dim[1]).filled(color);
         let font_size = style.font_size(theme);
         let text_w = glyph_cache.width(font_size, &state.text[..]);
         let text_x = position::align_left_of(pad_dim[0], text_w) + TEXT_PADDING;
@@ -575,7 +554,7 @@ impl<'a, F> Widget for TextBox<'a, F>
                     let htext_w = glyph_cache.width(font_size, &htext);
                     ([cursor_x + htext_w / 2.0, 0.0], [htext_w, dim[1]])
                 };
-                rect(dim[0], dim[1] - frame * 2.0).filled(color.highlighted())
+                form::rect(dim[0], dim[1] - frame * 2.0).filled(color.highlighted())
                     .shift(block_xy[0], block_xy[1])
             };
 

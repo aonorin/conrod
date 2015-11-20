@@ -125,18 +125,18 @@ fn is_over(mouse_xy: Point,
            label_dim: Dimensions,
            val_string_dim: Point,
            val_string_len: usize) -> Option<Elem> {
-    use utils::is_over_rect;
-    if is_over_rect([0.0, 0.0], mouse_xy, dim) {
-        if is_over_rect([label_x, 0.0], mouse_xy, label_dim) {
+    use position::is_over_rect;
+    if is_over_rect([0.0, 0.0], dim, mouse_xy) {
+        if is_over_rect([label_x, 0.0], label_dim, mouse_xy) {
             Some(Elem::LabelGlyphs)
         } else {
             let slot_w = value_glyph_slot_width(val_string_dim[1] as u32);
             let slot_rect_xy = [label_x + label_dim[0] / 2.0 + slot_w / 2.0, 0.0];
             let val_string_xy = [slot_rect_xy[0] - slot_w / 2.0 + val_string_dim[0] / 2.0, 0.0];
-            if is_over_rect(val_string_xy, mouse_xy, [val_string_dim[0], pad_dim[1]]) {
+            if is_over_rect(val_string_xy, [val_string_dim[0], pad_dim[1]], mouse_xy) {
                 let mut slot_xy = slot_rect_xy;
                 for i in 0..val_string_len {
-                    if is_over_rect(slot_xy, mouse_xy, [slot_w, pad_dim[1]]) {
+                    if is_over_rect(slot_xy, [slot_w, pad_dim[1]], mouse_xy) {
                         return Some(Elem::ValueGlyph(i, mouse_xy[1]))
                     }
                     slot_xy[0] += slot_w;
@@ -177,7 +177,7 @@ fn get_new_interaction(is_over_elem: Option<Elem>, prev: Interaction, mouse: Mou
 }
 
 
-impl<'a, T: Float, F> NumberDialer<'a, T, F> {
+impl<'a, T, F> NumberDialer<'a, T, F> where T: Float {
 
     /// Construct a new NumberDialer widget.
     pub fn new(value: T, min: T, max: T, precision: u8) -> NumberDialer<'a, T, F> {
@@ -209,10 +209,9 @@ impl<'a, T: Float, F> NumberDialer<'a, T, F> {
 
 }
 
-impl<'a, T, F> Widget for NumberDialer<'a, T, F>
-    where
-        F: FnMut(T),
-        T: Any + ::std::fmt::Debug + Float + NumCast + ToString,
+impl<'a, T, F> Widget for NumberDialer<'a, T, F> where
+    F: FnMut(T),
+    T: Any + ::std::fmt::Debug + Float + NumCast + ToString,
 {
     type State = State<T>;
     type Style = Style;
@@ -231,43 +230,25 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
     }
     fn style(&self) -> Style { self.style.clone() }
 
-    fn capture_mouse(prev: &State<T>, new: &State<T>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Highlighted(_), Interaction::Clicked(_)) => true,
-            _ => false,
-        }
-    }
-
-    fn uncapture_mouse(prev: &State<T>, new: &State<T>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Clicked(_), Interaction::Highlighted(_)) => true,
-            (Interaction::Clicked(_), Interaction::Normal) => true,
-            _ => false,
-        }
-    }
-
     fn default_width<C: CharacterCache>(&self, theme: &Theme, _: &GlyphCache<C>) -> Scalar {
         const DEFAULT_WIDTH: Scalar = 128.0;
-        self.common.maybe_width.or(theme.maybe_number_dialer.as_ref().map(|default| {
+        theme.maybe_number_dialer.as_ref().map(|default| {
             default.common.maybe_width.unwrap_or(DEFAULT_WIDTH)
-        })).unwrap_or(DEFAULT_WIDTH)
+        }).unwrap_or(DEFAULT_WIDTH)
     }
 
     fn default_height(&self, theme: &Theme) -> Scalar {
         const DEFAULT_HEIGHT: Scalar = 48.0;
-        self.common.maybe_height.or(theme.maybe_number_dialer.as_ref().map(|default| {
+        theme.maybe_number_dialer.as_ref().map(|default| {
             default.common.maybe_height.unwrap_or(DEFAULT_HEIGHT)
-        })).unwrap_or(DEFAULT_HEIGHT)
+        }).unwrap_or(DEFAULT_HEIGHT)
     }
 
     /// Update the state of the NumberDialer.
-    fn update<'b, C>(mut self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State<T>>
-        where C: CharacterCache,
-    {
+    fn update<C: CharacterCache>(mut self, args: widget::UpdateArgs<Self, C>) {
+        let widget::UpdateArgs { state, rect, style, mut ui, .. } = args;
 
-        let widget::UpdateArgs { prev_state, xy, dim, style, ui, .. } = args;
-        let widget::State { ref state, .. } = *prev_state;
-
+        let (xy, dim) = rect.xy_dim();
         let maybe_mouse = ui.input().maybe_mouse.map(|mouse| mouse.relative_to(xy));
         let frame = style.frame(ui.theme());
         let pad_dim = ::vecmath::vec2_sub(dim, [frame * 2.0; 2]);
@@ -284,14 +265,22 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
             (true, Some(mouse)) => {
                 let is_over_elem = is_over(mouse.xy, dim, pad_dim, label_x, label_dim,
                                            val_string_dim, val_string_len);
-                get_new_interaction(is_over_elem, state.interaction, mouse)
+                get_new_interaction(is_over_elem, state.view().interaction, mouse)
             },
         };
+
+        // Capture the mouse if clicked, uncapture if released.
+        match (state.view().interaction, new_interaction) {
+            (Interaction::Highlighted(_), Interaction::Clicked(_)) => { ui.capture_mouse(); },
+            (Interaction::Clicked(_), Interaction::Highlighted(_)) |
+            (Interaction::Clicked(_), Interaction::Normal)         => { ui.uncapture_mouse(); },
+            _ => (),
+        }
 
         // Determine new value from the initial state and the new state.
         let mut new_val = self.value;
         if let (Interaction::Clicked(elem), Interaction::Clicked(new_elem)) =
-            (state.interaction, new_interaction) {
+            (state.view().interaction, new_interaction) {
             if let (Elem::ValueGlyph(idx, y), Elem::ValueGlyph(_, new_y)) = (elem, new_elem) {
                 let ord = new_y.partial_cmp(&y).unwrap_or(Ordering::Equal);
                 if ord != Ordering::Equal {
@@ -333,7 +322,7 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
 
         // Call the `react` with the new value if the mouse is pressed/released on the widget
         // or if the value has changed.
-        if self.value != new_val || match (state.interaction, new_interaction) {
+        if self.value != new_val || match (state.view().interaction, new_interaction) {
             (Interaction::Highlighted(_), Interaction::Clicked(_)) |
             (Interaction::Clicked(_), Interaction::Highlighted(_)) => true,
             _ => false,
@@ -341,46 +330,50 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
             if let Some(ref mut react) = self.maybe_react { react(new_val) }
         }
 
-        // A function for constructing a new State.
-        let new_state = || {
-            State {
-                value: new_val,
-                min: self.min,
-                max: self.max,
-                precision: self.precision,
-                maybe_label: self.maybe_label.as_ref().map(|label| label.to_string()),
-                interaction: new_interaction,
-            }
-        };
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || state.value != new_val
-            || state.min != self.min || state.max != self.max
-            || state.precision != self.precision
-            || state.maybe_label.as_ref().map(|string| &string[..]) != self.maybe_label;
+        if state.view().value != new_val {
+            state.update(|state| state.value = new_val);
+        }
 
-        // Construct the new state if there was a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        if state.view().min != self.min {
+            state.update(|state| state.min = self.min);
+        }
+
+        if state.view().max != self.max {
+            state.update(|state| state.max = self.max);
+        }
+
+        if state.view().precision != self.precision {
+            state.update(|state| state.precision = self.precision);
+        }
+
+        if state.view().maybe_label.as_ref().map(|label| &label[..]) != self.maybe_label {
+            state.update(|state| {
+                state.maybe_label = self.maybe_label.as_ref().map(|label| label.to_string());
+            });
+        }
     }
 
     /// Construct an Element from the given NumberDialer State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
+    fn draw<C>(args: widget::DrawArgs<Self, C>) -> Element
         where C: CharacterCache,
     {
-        use elmesque::form::{collage, rect, text};
+        use elmesque::form::{self, collage, text};
         use elmesque::text::Text;
 
-        let widget::DrawArgs { state, style, theme, glyph_cache } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { rect, state, style, theme, glyph_cache, .. } = args;
 
         // Construct the frame and inner rectangle Forms.
+        let (xy, dim) = rect.xy_dim();
         let frame = style.frame(theme);
         let pad_dim = ::vecmath::vec2_sub(dim, [frame * 2.0; 2]);
         let frame_color = style.frame_color(theme);
         let color = style.color(theme);
-        let frame_form = rect(dim[0], dim[1]).filled(frame_color);
-        let inner_form = rect(pad_dim[0], pad_dim[1]).filled(color);
+        let frame_form = form::rect(dim[0], dim[1]).filled(frame_color);
+        let inner_form = form::rect(pad_dim[0], pad_dim[1]).filled(color);
         let val_string_len = state.max.to_string().len() + if state.precision == 0 { 0 }
                                                           else { 1 + state.precision as usize };
         let label_string = state.maybe_label.as_ref()
@@ -409,7 +402,7 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
                     Interaction::Highlighted(elem) => if let Elem::ValueGlyph(idx, _) = elem {
                         let rect_color = if idx == i { color.highlighted() }
                                          else { color };
-                        Some(rect(slot_w, pad_dim[1]).filled(rect_color)
+                        Some(form::rect(slot_w, pad_dim[1]).filled(rect_color)
                              .shift(val_string_pos[0].floor(), val_string_pos[1].floor())
                              .shift_x(x.floor()))
                     } else {
@@ -418,7 +411,7 @@ impl<'a, T, F> Widget for NumberDialer<'a, T, F>
                     Interaction::Clicked(elem) => if let Elem::ValueGlyph(idx, _) = elem {
                         let rect_color = if idx == i { color.clicked() }
                                          else { color };
-                        Some(rect(slot_w, pad_dim[1]).filled(rect_color)
+                        Some(form::rect(slot_w, pad_dim[1]).filled(rect_color)
                              .shift(val_string_pos[0].floor(), val_string_pos[1].floor())
                              .shift_x(x.floor()))
                     } else {

@@ -152,53 +152,43 @@ impl<'a, X, Y, F> Widget for XYPad<'a, X, Y, F>
     }
     fn style(&self) -> Style { self.style.clone() }
 
-    fn capture_mouse(prev: &State<X, Y>, new: &State<X, Y>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Highlighted, Interaction::Clicked) => true,
-            _ => false,
-        }
-    }
-
-    fn uncapture_mouse(prev: &State<X, Y>, new: &State<X, Y>) -> bool {
-        match (prev.interaction, new.interaction) {
-            (Interaction::Clicked, Interaction::Highlighted) => true,
-            (Interaction::Clicked, Interaction::Normal) => true,
-            _ => false,
-        }
-    }
-
     fn default_width<C: CharacterCache>(&self, theme: &Theme, _: &GlyphCache<C>) -> Scalar {
         const DEFAULT_WIDTH: Scalar = 128.0;
-        self.common.maybe_width.or(theme.maybe_xy_pad.as_ref().map(|default| {
+        theme.maybe_xy_pad.as_ref().map(|default| {
             default.common.maybe_width.unwrap_or(DEFAULT_WIDTH)
-        })).unwrap_or(DEFAULT_WIDTH)
+        }).unwrap_or(DEFAULT_WIDTH)
     }
 
     fn default_height(&self, theme: &Theme) -> Scalar {
         const DEFAULT_HEIGHT: Scalar = 128.0;
-        self.common.maybe_height.or(theme.maybe_xy_pad.as_ref().map(|default| {
+        theme.maybe_xy_pad.as_ref().map(|default| {
             default.common.maybe_height.unwrap_or(DEFAULT_HEIGHT)
-        })).unwrap_or(DEFAULT_HEIGHT)
+        }).unwrap_or(DEFAULT_HEIGHT)
     }
 
     /// Update the XYPad's cached state.
-    fn update<'b, C>(mut self, args: widget::UpdateArgs<'b, Self, C>) -> Option<State<X, Y>>
-        where C: CharacterCache,
-    {
-        use utils::is_over_rect;
+    fn update<C: CharacterCache>(mut self, args: widget::UpdateArgs<Self, C>) {
+        let widget::UpdateArgs { state, rect, style, mut ui, .. } = args;
 
-        let widget::UpdateArgs { prev_state, xy, dim, style, ui, .. } = args;
-        let widget::State { ref state, .. } = *prev_state;
+        let (xy, dim) = rect.xy_dim();
         let maybe_mouse = ui.input().maybe_mouse.map(|mouse| mouse.relative_to(xy));
         let frame = style.frame(ui.theme());
         let pad_dim = vec2_sub(dim, [frame * 2.0; 2]);
         let new_interaction = match (self.enabled, maybe_mouse) {
             (false, _) | (true, None) => Interaction::Normal,
             (true, Some(mouse)) => {
-                let is_over_pad = is_over_rect([0.0, 0.0], mouse.xy, pad_dim);
-                get_new_interaction(is_over_pad, state.interaction, mouse)
+                let is_over_pad = position::is_over_rect([0.0, 0.0], pad_dim, mouse.xy);
+                get_new_interaction(is_over_pad, state.view().interaction, mouse)
             },
         };
+
+        // Capture the mouse if clicked, uncapture if released.
+        match (state.view().interaction, new_interaction) {
+            (Interaction::Highlighted, Interaction::Clicked) => { ui.capture_mouse(); },
+            (Interaction::Clicked, Interaction::Highlighted) |
+            (Interaction::Clicked, Interaction::Normal)      => { ui.uncapture_mouse(); },
+            _ => (),
+        }
 
         // Determine new values from the mouse position over the pad.
         let (new_x, new_y) = match (maybe_mouse, new_interaction) {
@@ -217,7 +207,7 @@ impl<'a, X, Y, F> Widget for XYPad<'a, X, Y, F>
         if let Some(ref mut react) = self.maybe_react {
             if self.x != new_x || self.y != new_y { react(new_x, new_y) }
             else {
-                match (state.interaction, new_interaction) {
+                match (state.view().interaction, new_interaction) {
                     (Interaction::Highlighted, Interaction::Clicked) |
                     (Interaction::Clicked, Interaction::Highlighted) => react(new_x, new_y),
                     _ => (),
@@ -225,35 +215,42 @@ impl<'a, X, Y, F> Widget for XYPad<'a, X, Y, F>
             }
         }
 
-        // Function for constructing a new State.
-        let new_state = || {
-            State {
-                interaction: new_interaction,
-                x: self.x, min_x: self.min_x, max_x: self.max_x,
-                y: self.y, min_y: self.min_y, max_y: self.max_y,
-                maybe_label: self.maybe_label.as_ref().map(|label| label.to_string()),
-            }
+        if state.view().interaction != new_interaction {
+            state.update(|state| state.interaction = new_interaction);
+        }
+
+        let value_or_bounds_have_changed = {
+            let v = state.view();
+            v.x != self.x || v.y != self.y
+                || v.min_x != self.min_x || v.max_x != self.max_x
+                || v.min_y != self.min_y || v.max_y != self.max_y
         };
 
-        // Check whether or not the state has changed since the previous update.
-        let state_has_changed = state.interaction != new_interaction
-            || state.x != self.x || state.min_x != self.min_x || state.max_x != self.max_x
-            || state.y != self.y || state.min_y != self.min_y || state.max_y != self.max_y
-            || state.maybe_label.as_ref().map(|string| &string[..]) != self.maybe_label;
+        if value_or_bounds_have_changed {
+            state.update(|state| {
+                state.x = self.x;
+                state.y = self.y;
+                state.min_x = self.min_x;
+                state.max_x = self.max_x;
+                state.min_y = self.min_y;
+                state.max_y = self.max_y;
+            })
+        }
 
-        // Construct the new state if there was a change.
-        if state_has_changed { Some(new_state()) } else { None }
+        if state.view().maybe_label.as_ref().map(|label| &label[..]) != self.maybe_label {
+            state.update(|state| {
+                state.maybe_label = self.maybe_label.as_ref().map(|label| label.to_string());
+            });
+        }
     }
 
     /// Construct an Element from the given XYPad State.
-    fn draw<'b, C>(args: widget::DrawArgs<'b, Self, C>) -> Element
-        where C: CharacterCache,
-    {
-        use elmesque::form::{collage, line, rect, solid, text};
+    fn draw<C: CharacterCache>(args: widget::DrawArgs<Self, C>) -> Element {
+        use elmesque::form::{self, collage, line, solid, text};
         use elmesque::text::Text;
 
-        let widget::DrawArgs { state, style, theme, glyph_cache } = args;
-        let widget::State { ref state, dim, xy, .. } = *state;
+        let widget::DrawArgs { rect, state, style, theme, glyph_cache, .. } = args;
+        let (xy, dim) = rect.xy_dim();
         let frame = style.frame(theme);
         let pad_dim = vec2_sub(dim, [frame * 2.0; 2]);
         let (half_pad_w, half_pad_h) = (pad_dim[0] / 2.0, pad_dim[1] / 2.0);
@@ -261,8 +258,8 @@ impl<'a, X, Y, F> Widget for XYPad<'a, X, Y, F>
         // Construct the frame and inner rectangle Forms.
         let color = state.color(style.color(theme));
         let frame_color = style.frame_color(theme);
-        let frame_form = rect(dim[0], dim[1]).filled(frame_color);
-        let pressable_form = rect(pad_dim[0], pad_dim[1]).filled(color);
+        let frame_form = form::rect(dim[0], dim[1]).filled(frame_color);
+        let pressable_form = form::rect(pad_dim[0], pad_dim[1]).filled(color);
 
         // Construct the label Form.
         let maybe_label_form = state.maybe_label.as_ref().map(|l_text| {
